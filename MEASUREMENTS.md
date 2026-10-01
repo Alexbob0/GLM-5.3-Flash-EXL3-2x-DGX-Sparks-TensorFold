@@ -4,6 +4,9 @@ Two ASUS Ascent GX10 (GB10, 128 GB each), one QSFP56 DAC between the ConnectX-7 
 capped. This recipe at v1.3 (TensorFold v0.6.0) with its defaults except `DENSE`: 4 streams, 1,048,576-token window,
 FP8 KV cache, DFlash2 plus copy drafts, vision on. One boot per row, all rows the same day unless noted.
 
+Measured before v1.3.1 (which sets `TF_GLM_MULTI_LONE=0` by default; its README puts the single-stream cost at
+0.6-0.9%). The `exl3` change is independent of that setting.
+
 ## Decode, single stream: what agent work sees
 
 `tools/decode_probe.py`: streaming, T=0, thinking off, time to first token excluded, median of 3.
