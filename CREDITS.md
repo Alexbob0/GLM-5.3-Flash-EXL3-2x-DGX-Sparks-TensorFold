@@ -24,6 +24,10 @@ checkpoint's ShapleyMcg attribution and the drafter's license).
 - **[IncoAI](https://huggingface.co/incoai)**: the DFlash2 drafter,
   [`incoai/GLM-5.3-Flash-DFlash2`](https://huggingface.co/incoai/GLM-5.3-Flash-DFlash2) (**CC BY-NC-ND 4.0**:
   non-commercial use, no derivatives). Downloaded from its source, never redistributed here.
+- **[turboderp](https://huggingface.co/turboderp)**: the full EXL3 quantization
+  [`turboderp/GLM-5.3-Flash-exl3`](https://huggingface.co/turboderp/GLM-5.3-Flash-exl3), whose non-expert groups
+  (2.05bpw and 4.05bpw branches) make the dense pack of `DENSE=exl3`. `tools/dense_exl3_pack.py` range-reads them from
+  Hugging Face on the user's machine; they are never redistributed here.
 
 ## Inference engine
 
@@ -41,6 +45,9 @@ checkpoint's ShapleyMcg attribution and the drafter's license).
 
 ## Patches
 
+- `0054-glm-dense-exl3` and `tools/dense_exl3_pack.py`: the dense EXL3 pack idea, its range reads and the split of
+  the Hub quant's fused `qkv_proj` follow **[vcruz305/vllm-exl3](https://github.com/vcruz305/vllm-exl3)**'s
+  `tools/dense_overlay.py` (Apache 2.0); the projections run on TensorFold's own `tensorfold.cuda.exl3` linear.
 - `0003-glm-vision`: GLM's image and video processors (resize with pad, 2 fps frame choice, prompt layout) and vision
   tower, checked bit for bit against Hugging Face [transformers](https://github.com/huggingface/transformers) 5.17
   (Apache 2.0), the reference they follow; builds on TensorFold's Qwen image pipeline.

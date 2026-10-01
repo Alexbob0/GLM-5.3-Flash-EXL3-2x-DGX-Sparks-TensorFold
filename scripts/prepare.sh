@@ -164,6 +164,25 @@ info=$(docker run --rm --entrypoint tensorfold -e HF_HUB_OFFLINE=1 -v "$HF_CACHE
   die "tensorfold info cannot read the checkpoint: $info"
 printf '%s\n' "$info" | grep -v "EXL3 support is experimental" || true
 
+# ---------------------------------------------------------------- 5b. DENSE=exl3: the dense EXL3 pack, both Sparks
+if [[ "$DENSE" == exl3 ]]; then
+  pack="$HF_CACHE/$DENSE_EXL3_PACK"
+  if [[ ! -f "$pack" ]]; then
+    log "Building the dense EXL3 pack $DENSE_EXL3_PACK (~4 GB of range reads from turboderp/GLM-5.3-Flash-exl3)"
+    mkdir -p "$(dirname "$pack")"
+    python3 tools/dense_exl3_pack.py --out "$pack" || die "could not build the dense EXL3 pack (tools/dense_exl3_pack.py)"
+  fi
+  if [[ "$WORKER_WEIGHTS" != nfs ]]; then
+    wpack="$WORKER_HF/$DENSE_EXL3_PACK"
+    if [[ "$(worker "stat -c %s '$wpack' 2>/dev/null" || true)" != "$(stat -c %s "$pack")" ]]; then
+      log "Copying the dense EXL3 pack to the worker"
+      worker "mkdir -p '$(dirname "$wpack")'"
+      rsync -a --partial "$pack" "$WORKER:$wpack" -e "ssh -o BatchMode=yes" ${RSYNC_OPTS:-}
+    fi
+  fi
+  log "Dense EXL3 pack: $pack"
+fi
+
 # ---------------------------------------------------------------- 6. the same files on the worker
 if [[ "$WORKER_WEIGHTS" == nfs ]]; then         # no copy: rank 1 reads the head's cache over NFS
   ensure_nfs_volume

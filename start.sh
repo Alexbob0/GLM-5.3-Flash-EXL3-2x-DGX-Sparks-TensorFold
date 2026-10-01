@@ -49,7 +49,7 @@ for arg in "$@"; do [[ "$arg" == -h || "$arg" == --help ]] && { usage; exit 0; }
 # the last value). --drafter goes in front after the setup step, which knows DFlash2's snapshot.
 SERVE_ARGS=(--context "$CONTEXT" --parallel "$PARALLEL" --max-tokens "$MAX_TOKENS")
 [[ "$DRAFTER" =~ ^(mtp|dflash2)$ ]] || die "DRAFTER is mtp or dflash2, not $DRAFTER"
-[[ "$DENSE" =~ ^(bf16|fp8|q4)$ ]] || die "DENSE is bf16, fp8 or q4, not $DENSE"
+[[ "$DENSE" =~ ^(bf16|fp8|q4|exl3)$ ]] || die "DENSE is bf16, fp8, q4 or exl3, not $DENSE"
 [[ "$COMM" =~ ^(nccl|roce)$ ]] || die "COMM is nccl or roce, not $COMM"
 [[ "$KV" =~ ^(bf16|fp8)$ ]] || die "KV is bf16 or fp8, not $KV"
 [[ "$CONTEXT" =~ ^[0-9]+$ && "$CONTEXT" -le 1048576 ]] || die "CONTEXT is a token count up to 1048576 (0: the largest that fits), not $CONTEXT"

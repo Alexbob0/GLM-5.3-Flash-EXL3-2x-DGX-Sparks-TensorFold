@@ -3,6 +3,24 @@
 Every change to this recipe, newest first. Each release names the image it serves: `scripts/prepare.sh` pulls
 `ghcr.io/miaai-lab/glm-5.3-flash-exl3-2x-dgx-sparks-tensorfold` by the digest pinned in `scripts/config.sh`.
 
+## Unreleased (fork): dense weights from an EXL3 pack, worker cache and host names
+
+Patches 0054 and 0055 on top of v1.3.1's 53 (the image is built locally: no published tag matches these patches).
+
+### Added
+- **`DENSE=exl3`** (patch `0054-glm-dense-exl3`): attention and the shared experts at 4 bits a weight, the dense MLPs
+  at 5 and the head at 6, from `turboderp/GLM-5.3-Flash-exl3`, on TensorFold's own `Exl3Linear`; the matrices the pack
+  lacks stay FP8. `prepare.sh` builds the pack once (`tools/dense_exl3_pack.py`, ~4 GB of range reads) and copies it
+  to the worker. Over `fp8`: prose 51.4 -> 66.8 tok/s, code 116.1 -> 122.9, structured 99.7 -> 107.1 at one stream,
+  68k-token prefill 42.5 -> 39.9 s; HumanEval and French end-of-turn as `fp8`, where `q4` loses 11 French replies in
+  40 (README: Dense weights from an EXL3 pack).
+- `chat_template_kwargs.thinking` is read as `enable_thinking` (patch `0055-server-thinking-alias`), the switch
+  DeepSeek-V4 clients such as pi send.
+- `WORKER_HF_CACHE`: the worker's Hugging Face cache when it is not its `HF_HOME`.
+
+### Fixed
+- `WORKER` / `FABRIC_PEER` given as a host name (e.g. an `/etc/hosts` alias of the CX7 address) stopped `start.sh`
+  with `no route from this node to <name>`: `ip route get` takes addresses only, so the name is resolved first.
 ## v1.3.1 (2026-10-01): prompt cache in interactive sessions, setup fixes
 
 Image unchanged: `v0.6.0-ae8d1c789b47`.

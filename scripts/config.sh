@@ -105,7 +105,21 @@ MAX_TOKENS="${MAX_TOKENS:-32768}"
 #        ~1,090 -> ~1,260 tok/s; GSM8K 98.0% and HumanEval 95.1% on both (bf16: 97.2 / 96.3). Lossy: replies differ.
 #   fp8: FP8 e4m3 with a scale per row and 128 columns (patch 0002), half bf16's bytes: ~+33% decode over bf16.
 #   bf16: the checkpoint as it is.
-export TF_GLM_DENSE="$DENSE"
+#   exl3: the projections from a dense EXL3 pack (patch 0054) on TensorFold's own Exl3Linear: attention and the shared
+#        experts at 4 bits a weight, the three dense MLPs at 5 and the head at 6, all from turboderp/GLM-5.3-Flash-exl3
+#        (trellis + Hadamard, not round-to-nearest), the rest (kv_b, indexer, KDA gates) in FP8. prepare.sh builds the
+#        pack once (tools/dense_exl3_pack.py, ~4 GB of range reads) under HF_CACHE (DENSE_EXL3_PACK) and copies it to
+#        the worker. sparkDash on 2x GB10 (one boot each), prose / code / structured at 1 stream: fp8 51.4 / 116.1 /
+#        99.7, exl3 66.8 / 122.9 / 107.1, q4 65.4 / 132.8 / 120.4 tok/s; HumanEval 96.3% (fp8 96.4%, q4 95.8%); French
+#        code prompts that never end their turn (40 at T=0.7): q4 11, fp8 1, exl3 0. Prompt chunks of 4,096 rows
+#        (TF_GLM_PREFILL_ROWS) amortize the per-chunk weight unpack: 68k-token prefill 42.5 s (fp8) -> ~40 s.
+DENSE_EXL3_PACK="${DENSE_EXL3_PACK:-dense-exl3/glm53-k4mix.safetensors}"   # the pack's path under HF_CACHE
+if [[ "$DENSE" == exl3 ]]; then
+  export TF_GLM_DENSE=fp8 TF_GLM_DENSE_EXL3="/root/.cache/huggingface/$DENSE_EXL3_PACK"
+  export TF_GLM_PREFILL_ROWS="${TF_GLM_PREFILL_ROWS:-4096}"
+else
+  export TF_GLM_DENSE="$DENSE"
+fi
 # The ranks' all-gathers. roce (default): the small ones (a decode round's partials, the samplers; up to
 # TF_ROCE_MAX_KB below) as one-shot RDMA writes over the Sparks' RoCE link, b12x's transport (patch 0006): 11 us a
 # 16 KiB gather against NCCL's 45; decode +6% (prose 44.2 -> 46.9, code 48.7 -> 51.6). NCCL keeps the rest. nccl: NCCL
@@ -222,5 +236,5 @@ prepared_state() {
   hash=$(image_hash)
   label=$(docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null || echo missing)
   wlabel=$(worker docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null || echo missing)
-  echo "model=$MODEL_ID@$MODEL_REVISION drafter=$DRAFTER@$DFLASH2_REVISION image=$label worker=$wlabel patches=$hash worker_host=$WORKER weights=$WORKER_WEIGHTS"
+  echo "model=$MODEL_ID@$MODEL_REVISION drafter=$DRAFTER@$DFLASH2_REVISION image=$label worker=$wlabel patches=$hash worker_host=$WORKER weights=$WORKER_WEIGHTS dense=$DENSE"
 }

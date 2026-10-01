@@ -265,6 +265,39 @@ checks that the worker sees every file of both snapshots as the head has them, i
 exported path as the worker mounts it (default: the head's `HF_CACHE`; `/` for an NFSv4 export with `fsid=0`), and
 `NFS_SERVER` the head's address (default: its address on the link).
 
+## Dense weights from an EXL3 pack
+
+`DENSE=exl3` serves attention, the shared experts, the dense MLPs and the head from EXL3 groups instead of the
+checkpoint's BF16 matrices: attention and the shared experts at 4 bits a weight, the three dense MLPs at 5 and the head
+at 6, taken from [`turboderp/GLM-5.3-Flash-exl3`](https://huggingface.co/turboderp/GLM-5.3-Flash-exl3) (2.05bpw and
+4.05bpw branches). Unlike `q4`'s round-to-nearest groups, EXL3 quantizes with a Hadamard rotation and a trellis code.
+The matrices the pack lacks (kv_b, the indexer, KDA's gates) stay FP8. `scripts/prepare.sh` builds the pack once
+(`tools/dense_exl3_pack.py`: ~4 GB of HTTP range reads, only the non-expert groups) and copies it to the worker.
+
+```bash
+DENSE=exl3 ./start.sh restart        # or DENSE=exl3 in scripts/local.sh
+```
+
+Two DGX Sparks, GPU clocks not capped, the same day and the same sparkDash prompts for every row (1 stream, and
+4 streams in all):
+
+| `DENSE` | Prose | Code | Structured | 4 streams prose / code / structured | 68k-token prefill | KV pool |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `fp8` | 51.4 | 116.1 | 99.7 | 95.8 / 248.4 / 165.1 | 42.5 s | 2.32M |
+| `exl3` | 66.8 | 122.9 | 107.1 | 104.8 / 257.3 / 221.2 | 39.9 s | 2.11M |
+| `q4` | 65.4 | 132.8 | 120.4 | 105.5 / 286.9 / 255.2 | — | 2.68M |
+
+| Quality | `fp8` | `exl3` | `q4` |
+| --- | ---: | ---: | ---: |
+| HumanEval, 164 problems x 5 samples at T=0.7, thinking off | 96.2% | 96.1% | 96.0% |
+| 8 French coding tasks x 5 samples: replies that never end their turn | 0 / 40 | 0 / 40 | 11 / 40 |
+| P(end of turn) right after the closing code fence, French tasks (40 draws, T=1) | 0.82 | 0.93 | 0.55 |
+
+`q4` loses the end of a turn on short non-English prompts: after the code block the model copies the instruction or
+starts an invented next exercise until `max_tokens`. The margin is already thin in the model (0.76 with `bf16`); the
+4-bit round-to-nearest groups tip it, EXL3's 4-bit groups do not. `exl3` sets `TF_GLM_PREFILL_ROWS=4096` (the prompt
+GEMM unpacks each matrix once a chunk, so bigger chunks amortize it; the KV pool gives back ~0.4M tokens).
+
 ## Configuration
 
 Every setting lives in [`scripts/config.sh`](scripts/config.sh). Set one for a single run from the environment
@@ -274,14 +307,16 @@ sets a value wins: the environment, then `scripts/local.sh`, then `.env`, then t
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `WORKER` / `FABRIC_PEER` | empty | the worker's ssh target (`user@<address>`), and its CX7 address when `WORKER` is on another network |
+| `WORKER` / `FABRIC_PEER` | empty | the worker's ssh target (`user@<address>` or `user@<host name>`), and its CX7 address (or a name that resolves to it) when `WORKER` is on another network |
+| `WORKER_HF_CACHE` | the worker's `HF_HOME` | the worker's Hugging Face cache when it is not its `HF_HOME` (e.g. a shared models folder) |
 | `MASTER_PORT` | `29551` | the ranks' rendezvous port (keep it on the private link) |
 | `PARALLEL` | `4` (`1` with `DRAFTER=mtp`) | requests decoded together, 1 to 4 (above 1 needs `DRAFTER=dflash2`) |
 | `CONTEXT` | `1048576` | prompt + reply window per request (with `KV=fp8`; other defaults in [KV pool and memory](#kv-pool-and-memory)); `0`: the largest that fits |
 | `KV` | `fp8` | `fp8` or `bf16` (exact, shorter window) DSA latent cache and indexer keys |
 | `WORKER_WEIGHTS` | `copy` | `copy`: the worker keeps its own copy of the weights; `nfs`: it reads the head's over NFS ([Worker weights over NFS](#worker-weights-over-nfs)); with `NFS_PATH`, `NFS_SERVER`, `NFS_VOLUME` |
 | `KV_POOL_GIB` / `MEMORY_RESERVE_GIB` | `12.5` / `14.5` | the shared pool beyond the window (kept prompts, more long conversations at once) grows into what is free at start minus the reserve, up to `KV_POOL_GIB` GiB a Spark; the reserve sets the lowest free memory on the head (~4.5-5 GiB); raise it when other work shares the Sparks |
-| `DENSE` | `q4` | the checkpoint's BF16 weights (attention, shared experts, dense layers, head): `q4` (4-bit groups of 64, head and kv_b in FP8), `fp8` or `bf16` |
+| `DENSE` | `q4` | the checkpoint's BF16 weights (attention, shared experts, dense layers, head): `q4` (4-bit groups of 64, head and kv_b in FP8), `fp8`, `bf16`, or `exl3` (an EXL3 pack, see [Dense weights from an EXL3 pack](#dense-weights-from-an-exl3-pack)) |
+| `DENSE_EXL3_PACK` | `dense-exl3/glm53-k4mix.safetensors` | with `DENSE=exl3`: the pack's path under `HF_CACHE`, built by `prepare.sh` when missing |
 | `DRAFTER` | `dflash2` | `dflash2`: IncoAI's DFlash2 drafter, licensed [CC BY-NC-ND 4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/), **non-commercial use only**; +5-10% decode. `mtp`: the checkpoint's own MTP head, one request at a time, which avoids that license (set it before the first `./start.sh` and DFlash2 is never downloaded) |
 | `TF_GLM_MTP` | `auto` | the checkpoint's MTP head beside DFlash2: `auto` leaves it out while DFlash2 drafts every request; `1` (TensorFold v0.6.0's own default) loads it, 1.77 GiB a Spark, with `PARALLEL=1`. `DRAFTER=mtp` always loads it |
 | `DRAFT_POLICY` | `fnc7:0.3` | how many DFlash2 drafts a round verifies: up to 7, until the drafts' chance under the request's own sampling noise drops below 0.3 |
@@ -367,6 +402,8 @@ applied with `patch -p0` in filename order); `start.sh` rebuilds or re-pulls the
 | Area | Patches | Change | Effect |
 | --- | --- | --- | --- |
 | Weights | `0002-glm-dense-fp8`, `0005-glm-dense-q4` | the checkpoint's BF16 dense weights in FP8, or 4-bit with MSE-searched ranges (`DENSE`) | q4 over fp8: prose 38.9 -> 44.4 tok/s, code 44.2 -> 48.7, prefill ~1,090 -> ~1,260 tok/s |
+| Weights, EXL3 | `0054-glm-dense-exl3` | the dense projections from an EXL3 pack on TensorFold's own `Exl3Linear` (`DENSE=exl3`, `TF_GLM_DENSE_EXL3`), each matrix cut per rank like its BF16 twin | see [Dense weights from an EXL3 pack](#dense-weights-from-an-exl3-pack) |
+| Server, clients | `0055-server-thinking-alias` | `chat_template_kwargs.thinking` read as `enable_thinking` (the switch DeepSeek-V4 clients such as pi send) | the same request thinks or not on either stack |
 | KV cache | `0038-glm-kv-fp8` | the DSA latent cache and the indexer's pooled keys as FP8 rows (`KV=fp8`) | the 1M window with 4 requests fits |
 | Prompt | `0001-glm-exl3-prompt-experts`, `0004-glm-prompt-kernels`, `0009-glm-prefill-kernels`, `0020-glm-prompt-experts-order`, `0024-glm-prompt-select-rows`, `0028-glm-lean-prompt-scratch` | EXL3 expert kernels that keep a prompt chunk's rows in L2, launched in a better order; each row's input rotated once; dense attention only where the sparse pass needs it; token selection in blocks of 512 rows; smaller prompt scratch | faster prefill, less memory at 1M |
 | Prompt, two Sparks | `0010-glm-hc-split`, `0033-glm-prefill-overlap2`, `0017-glm-overlap-priority`, `0022-glm-overlap-normal-priority` | hyper-connection glue split by rows between the Sparks, exchanges overlapped with the next rows' work (`SPLIT`) | 50k prefill ~1,270 -> ~1,730 tok/s with 0009 and 0020; decode rounds pay ~1.5% |
