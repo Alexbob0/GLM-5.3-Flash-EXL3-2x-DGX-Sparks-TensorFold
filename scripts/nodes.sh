@@ -1,0 +1,90 @@
+# The two Sparks: the worker over ssh, and each node's RoCE link found from the route between them.
+# Sourced by start.sh, stop.sh and prepare.sh after config.sh.
+
+# Run a command on the worker (rank 1). Key-based ssh only, no prompts.
+worker() { ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 "$WORKER" "$@"; }
+
+# The worker's Hugging Face cache: its own HF_HOME, else ~/.cache/huggingface there. prepare.sh copies the checkpoint
+# into it and start.sh mounts it into rank 1.
+worker_hf_cache() { worker 'echo "${HF_HOME:-$HOME/.cache/huggingface}"'; }
+
+need_worker() {
+  [[ -n "${WORKER:-}" ]] || die "WORKER is not set: put WORKER=user@<worker address> in scripts/local.sh (see scripts/local.sh.example)"
+  worker true 2>/dev/null || die "cannot ssh to $WORKER without a password: set up key-based ssh (ssh-copy-id $WORKER)"
+}
+
+# link_info <peer address>: this node's side of the link to <peer>: "<address> <netdev> <rdma device> <gid index>".
+# The netdev and source address come from the route to the peer; the RDMA device from sysfs; the GID index is the
+# RoCE v2 entry that holds this node's IPv4 address (an all-zero or v1 entry makes NCCL fail about a minute in).
+link_info() {
+  local peer=$1 route dev src hca idx type gid want
+  route=$(ip -o -4 route get "$peer" 2>/dev/null) || return 1
+  dev=$(sed -n 's/.* dev \([^ ]*\).*/\1/p' <<<"$route")
+  src=$(sed -n 's/.* src \([^ ]*\).*/\1/p' <<<"$route")
+  hca=$(ls /sys/class/net/"$dev"/device/infiniband 2>/dev/null | head -1)
+  idx=""
+  if [[ -n "$hca" ]]; then
+    want=$(printf '0000:0000:0000:0000:0000:ffff:%02x%02x:%02x%02x' $(tr '.' ' ' <<<"$src"))
+    for f in /sys/class/infiniband/"$hca"/ports/1/gids/*; do
+      gid=$(cat "$f" 2>/dev/null) || continue
+      [[ "$gid" == "$want" ]] || continue
+      type=$(cat /sys/class/infiniband/"$hca"/ports/1/gid_attrs/types/"${f##*/}" 2>/dev/null)
+      [[ "$type" == *"v2"* ]] && { idx=${f##*/}; break; }
+    done
+  fi
+  echo "$src $dev ${hca:--} ${idx:--}"
+}
+
+# rails <netdev> <gid index>: every RoCE device of this node on the link's subnet (the CX7's second port too, when it
+# is up and addressed there) whose RoCE v2 IPv4 GID sits at the same index, the link's own device first.
+rails() {
+  local dev=$1 gid=$2 net cidr hcas other ip idx
+  cidr=$(ip -o -4 addr show dev "$dev" | awk '{print $4}' | head -1)
+  net=$(python3 -c "import ipaddress,sys; print(ipaddress.ip_interface(sys.argv[1]).network)" "$cidr")
+  hcas=$(ls /sys/class/net/"$dev"/device/infiniband | head -1)
+  for n in /sys/class/net/*; do
+    other=${n##*/}
+    [[ "$other" == "$dev" || ! -d $n/device/infiniband || "$(cat $n/operstate 2>/dev/null)" != up ]] && continue
+    ip=$(ip -o -4 addr show dev "$other" | awk '{print $4}' | head -1)
+    [[ -n "$ip" ]] || continue
+    python3 -c "import ipaddress,sys; sys.exit(ipaddress.ip_interface(sys.argv[1]) not in ipaddress.ip_network(sys.argv[2]) and ipaddress.ip_interface(sys.argv[1]).ip not in ipaddress.ip_network(sys.argv[2]))" "$ip" "$net" || continue
+    idx=$(ls $n/device/infiniband | head -1)
+    [[ "$(cat /sys/class/infiniband/$idx/ports/1/gid_attrs/types/$gid 2>/dev/null)" == *v2* ]] || continue
+    hcas+=",$idx"
+  done
+  echo "$hcas"
+}
+
+# The same function on the worker (its definition is sent over ssh).
+worker_link_info() { worker "$(declare -f link_info); link_info $1"; }
+
+# HEAD_ADDR / HEAD_DEV / HEAD_HCA / HEAD_GID and WORKER_ADDR / WORKER_DEV / WORKER_HCA / WORKER_GID: the link the two
+# ranks talk over (NCCL and the rendezvous). FABRIC_PEER overrides the worker's link address when WORKER is reached
+# over another network.
+detect_link() {
+  local peer=${FABRIC_PEER:-${WORKER#*@}}
+  read -r HEAD_ADDR HEAD_DEV HEAD_HCA HEAD_GID <<<"$(link_info "$peer")" || true
+  [[ -n "${HEAD_ADDR:-}" ]] || die "no route from this node to $peer"
+  read -r WORKER_ADDR WORKER_DEV WORKER_HCA WORKER_GID <<<"$(worker_link_info "$HEAD_ADDR")" || true
+  [[ -n "${WORKER_ADDR:-}" ]] || die "the worker has no route back to $HEAD_ADDR"
+  # both CX7 ports when both are cabled and addressed: a prompt chunk's all-gather is ~1.8x faster on two rails
+  HEAD_HCAS=$(rails "$HEAD_DEV" "$HEAD_GID")
+  WORKER_HCAS=$(worker "$(declare -f rails); rails $WORKER_DEV $WORKER_GID")
+  [[ "${NCCL_RAILS:-2}" == 1 ]] && { HEAD_HCAS=$HEAD_HCA; WORKER_HCAS=$WORKER_HCA; }
+  [[ "$(tr ',' '\n' <<<"$HEAD_HCAS" | wc -l)" == "$(tr ',' '\n' <<<"$WORKER_HCAS" | wc -l)" ]] ||
+    { HEAD_HCAS=$HEAD_HCA; WORKER_HCAS=$WORKER_HCA; }
+  for v in HEAD_HCA HEAD_GID WORKER_HCA WORKER_GID; do
+    [[ "${!v}" != "-" ]] || die "no RoCE device or RoCE v2 GID for the link ($v): is $HEAD_DEV / $WORKER_DEV the CX7 port between the Sparks? Set FABRIC_PEER to the worker's CX7 address"
+  done
+}
+
+# NCCL over the RoCE link, per rank: that rank's netdev, RoCE devices (both rails) and GID index, 4 channels.
+# Measured between the Sparks: a decode-sized all-gather 32 us (80 with NCCL's defaults) and a prompt chunk's 32 MB
+# 1.9 ms on two rails (3.5 on one). NCCL's other knobs (protocols, buffer sizes, QPs, NCCL_NET=IB and the like) were no
+# better, and some of them kept NCCL on one rail.
+nccl_env() {
+  local dev=$1 hcas=$2 gid=$3
+  echo "-e NCCL_SOCKET_IFNAME=$dev -e NCCL_IB_HCA=$hcas -e NCCL_IB_GID_INDEX=$gid" \
+       "-e NCCL_MIN_NCHANNELS=${NCCL_CHANNELS:-4} -e NCCL_MAX_NCHANNELS=${NCCL_CHANNELS:-4}" \
+       ${NCCL_DEBUG:+-e NCCL_DEBUG=$NCCL_DEBUG}
+}

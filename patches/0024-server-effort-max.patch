@@ -1,0 +1,37 @@
+diff --git tensorfold/server/request_options.py tensorfold/server/request_options.py
+index 4e2b39e..a83156a 100644
+--- tensorfold/server/request_options.py
++++ tensorfold/server/request_options.py
+@@ -38,13 +38,13 @@ def parse_numbers(fields: dict[str, Any]) -> dict[str, Any]:
+     return parsed
+ 
+ 
+-EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh")
++EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+ 
+ 
+ def effort_levels(template: str | None) -> frozenset[str]:
+-    """The efforts a chat template names: Qwen3.8's low, medium and xhigh; GLM-5.3's low and high."""
++    """The efforts a chat template names: Qwen3.8's low, medium and xhigh; GLM-5.3's low, high and max."""
+ 
+-    return frozenset(re.findall(r"""['"](minimal|low|medium|high|xhigh)['"]""", template or ""))
++    return frozenset(re.findall(r"""['"](minimal|low|medium|high|xhigh|max)['"]""", template or ""))
+ 
+ 
+ def thinking_fields(body: dict[str, Any], levels: frozenset[str] = frozenset()) -> dict[str, Any]:
+@@ -57,10 +57,11 @@ def thinking_fields(body: dict[str, Any], levels: frozenset[str] = frozenset())
+         effort = kwargs.get("reasoning_effort")           # where vLLM's clients put it
+     if effort is not None:
+         if not isinstance(effort, str) or effort not in EFFORTS:
+-            raise RequestError("reasoning_effort must be none, minimal, low, medium, high or xhigh")
+-        # OpenAI's "high" and "minimal" are "xhigh" and "low" unless the template names them (GLM-5.3 names "high")
+-        named = effort in levels or effort not in ("high", "minimal")
+-        fields["reasoning_effort"] = effort if named else {"high": "xhigh", "minimal": "low"}[effort]
++            raise RequestError("reasoning_effort must be none, minimal, low, medium, high, xhigh or max")
++        # OpenAI's "high" and "minimal" are "xhigh" and "low" unless the template names them (GLM-5.3 names "high"),
++        # and "max" is the template's own top level where it names one (GLM-5.3's default), else "xhigh"
++        named = effort in levels or effort not in ("high", "minimal", "max")
++        fields["reasoning_effort"] = effort if named else {"high": "xhigh", "minimal": "low", "max": "xhigh"}[effort]
+         fields["enable_thinking"] = effort != "none"
+     if isinstance(kwargs, dict) and "enable_thinking" in kwargs:          # an explicit switch wins
+         fields["enable_thinking"] = bool(kwargs["enable_thinking"])
