@@ -109,9 +109,9 @@ MAX_TOKENS="${MAX_TOKENS:-32768}"
 #        experts at 4 bits a weight, the three dense MLPs at 5 and the head at 6, all from turboderp/GLM-5.3-Flash-exl3
 #        (trellis + Hadamard, not round-to-nearest), the rest (kv_b, indexer, KDA gates) in FP8. prepare.sh builds the
 #        pack once (tools/dense_exl3_pack.py, ~4 GB of range reads) under HF_CACHE (DENSE_EXL3_PACK) and copies it to
-#        the worker. sparkDash on 2x GB10 (one boot each), prose / code / structured at 1 stream: fp8 51.4 / 116.1 /
-#        99.7, exl3 66.8 / 122.9 / 107.1, q4 65.4 / 132.8 / 120.4 tok/s; HumanEval 96.3% (fp8 96.2%, q4 96.0%); French
-#        code prompts that never end their turn (40 at T=0.7): q4 11, fp8 0, exl3 1 (tools/end_of_turn.py). Prompt chunks of 4,096 rows
+#        the worker. 2x GB10, one stream (tools/decode_probe.py), code (French) / prose / structured: fp8 69.6 / 51.7 /
+#        102.5, exl3 77.6 / 59.9 / 109.4, q4 76.6 / 57.2 / 115.6 tok/s; HumanEval 96.3% (fp8 96.2%, q4 96.0%); French
+#        code prompts that never end their turn (48): q4 12, fp8 1, exl3 1 (tools/end_of_turn.py). MEASUREMENTS.md. Prompt chunks of 4,096 rows
 #        (TF_GLM_PREFILL_ROWS) amortize the per-chunk weight unpack: 68k-token prefill 42.5 s (fp8) -> ~40 s.
 DENSE_EXL3_PACK="${DENSE_EXL3_PACK:-dense-exl3/glm53-k4mix.safetensors}"   # the pack's path under HF_CACHE
 if [[ "$DENSE" == exl3 ]]; then

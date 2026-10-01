@@ -278,19 +278,24 @@ The matrices the pack lacks (kv_b, the indexer, KDA's gates) stay FP8. `scripts/
 DENSE=exl3 ./start.sh restart        # or DENSE=exl3 in scripts/local.sh
 ```
 
-Two DGX Sparks, GPU clocks not capped, the same day and the same sparkDash prompts for every row (1 stream, and
-4 streams in all):
+Two DGX Sparks, GPU clocks not capped, one boot per row ([MEASUREMENTS.md](MEASUREMENTS.md) has every table and how
+it was measured). Single stream, T=0, thinking off, time to first token excluded (`tools/decode_probe.py`):
 
-| `DENSE` | Prose | Code | Structured | 4 streams prose / code / structured | 68k-token prefill | KV pool |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `fp8` | 51.4 | 116.1 | 99.7 | 95.8 / 248.4 / 165.1 | 42.5 s | 2.32M |
-| `exl3` | 66.8 | 122.9 | 107.1 | 104.8 / 257.3 / 221.2 | 39.9 s | 2.11M |
-| `q4` | 65.4 | 132.8 | 120.4 | 105.5 / 286.9 / 255.2 | — | 2.68M |
+| `DENSE` | Structured (count 1-200) | Prose (hash map) | Code (a French binary search tree) | 68k-token prefill | KV pool |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `fp8` | 102.5 | 51.7 | 69.6 | 42.5 s | 2.32M |
+| `exl3` | 109.4 | 59.9 | **77.6** | 39.9 s | 2.11M |
+| `q4` | 115.6 | 57.2 | 76.6 | — | 2.68M |
+
+The code prompt asks for a real program. It is the probe closest to agent work, and on it `exl3` matches `q4`. With
+sparkDash's prompts (its "code" writes 50 copies of one function, which favours the copy drafts) `exl3` lands between
+`fp8` and `q4`: 66.8 / 122.9 / 107.1 tok/s for prose / code / structured at one stream, and 257 tok/s of code with
+4 streams in all (`fp8` 248, `q4` 287).
 
 | Quality | `fp8` | `exl3` | `q4` |
 | --- | ---: | ---: | ---: |
 | HumanEval, 164 problems x 5 samples at T=0.7, thinking off | 96.2% | 96.3% | 96.0% |
-| 8 French coding tasks x 5 samples at T=0.7: replies that never end their turn | 0 / 40 | 1 / 40 | 11 / 40 |
+| French coding prompts (48) whose reply never ends its turn | 1 | 1 | 12 |
 | P(end of turn) right after the closing code fence, French tasks (40 draws, T=1; `tools/end_of_turn.py`) | 0.82 | 0.88 | 0.55 |
 
 `q4` loses the end of a turn on short non-English prompts: after the code block the model copies the instruction or
