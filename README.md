@@ -289,13 +289,13 @@ Two DGX Sparks, GPU clocks not capped, the same day and the same sparkDash promp
 
 | Quality | `fp8` | `exl3` | `q4` |
 | --- | ---: | ---: | ---: |
-| HumanEval, 164 problems x 5 samples at T=0.7, thinking off | 96.2% | 96.1% | 96.0% |
-| 8 French coding tasks x 5 samples: replies that never end their turn | 0 / 40 | 0 / 40 | 11 / 40 |
-| P(end of turn) right after the closing code fence, French tasks (40 draws, T=1) | 0.82 | 0.93 | 0.55 |
+| HumanEval, 164 problems x 5 samples at T=0.7, thinking off | 96.2% | 96.3% | 96.0% |
+| 8 French coding tasks x 5 samples at T=0.7: replies that never end their turn | 0 / 40 | 1 / 40 | 11 / 40 |
+| P(end of turn) right after the closing code fence, French tasks (40 draws, T=1; `tools/end_of_turn.py`) | 0.82 | 0.88 | 0.55 |
 
 `q4` loses the end of a turn on short non-English prompts: after the code block the model copies the instruction or
 starts an invented next exercise until `max_tokens`. The margin is already thin in the model (0.76 with `bf16`); the
-4-bit round-to-nearest groups tip it, EXL3's 4-bit groups do not. `exl3` sets `TF_GLM_PREFILL_ROWS=4096` (the prompt
+4-bit round-to-nearest groups tip it, EXL3's 4-bit groups do not (`tools/end_of_turn.py` measures it on a running server). `exl3` sets `TF_GLM_PREFILL_ROWS=4096` (the prompt
 GEMM unpacks each matrix once a chunk, so bigger chunks amortize it; the KV pool gives back ~0.4M tokens).
 
 ## Configuration
