@@ -1,0 +1,95 @@
+--- tensorfold/families/glm5_next/cuda/multi.py
++++ tensorfold/families/glm5_next/cuda/multi.py
+@@ -113,6 +113,24 @@
+     return math.lcm(64, grid) if grid else 64
+ 
+ 
++def fill_time(value: str | None = None) -> float | None:
++    """TF_GLM_FILL_TIME: the share of GPU time prompt chunks take while other streams decode, or None (unset: the
++    iteration share of TF_GLM_FILL_SHARE). A prompt chunk deep in a long prompt takes ~15x a decode round, so one
++    chunk a round leaves the decoding streams a few percent of the time; with a time share, the rounds after a chunk
++    run until the decoding streams had their share of its time."""
++
++    value = os.environ.get("TF_GLM_FILL_TIME", "") if value is None else value
++    if value.strip() == "":
++        return None
++    try:
++        share = float(value)
++    except ValueError:
++        share = -1.0
++    if not 0 < share < 1:
++        raise ValueError(f"TF_GLM_FILL_TIME: a share above 0 and below 1, not {value!r}")
++    return share
++
++
+ def fill_share(value: str | None = None) -> float:
+     """TF_GLM_FILL_SHARE: the share of iterations prompt chunks take while other streams decode (default 0.5: a
+     chunk, a round, a chunk, ...); 1 fills every prompt before decoding on."""
+@@ -337,6 +355,9 @@
+         self.fill_rows = fill_rows(e.prefill_rows, self.grid)
+         self.share = fill_share()
+         self.credit = 0.0
++        self.fill_time = fill_time()      # rank 0 only decides from it: rank 1 applies FILL/ROUND as they come
++        self.owed = 0.0                   # seconds of decode rounds owed to the decoding streams (TF_GLM_FILL_TIME)
++        self.fill_owes = False
+         # TF_GLM_MULTI_PREFILL: rank 0 groups filling streams into one chunk (rank 1 applies whatever MFILL it gets)
+         self.group = multi_prefill.enabled()
+         if self.group:
+@@ -892,7 +913,13 @@
+         if not filling:
+             return None
+         decoding = [l for l in self.lanes.values() if l.decoding and not l.paused and not l.s.done]
+-        if decoding:
++        self.fill_owes = bool(decoding) and self.fill_time is not None
++        if not decoding:
++            self.owed = 0.0
++        elif self.fill_time is not None:
++            if self.owed > 0:
++                return None
++        else:
+             self.credit += self.share
+             if self.credit < 1:
+                 return None
+@@ -916,6 +943,7 @@
+             self.grouped["chunks"] += 1
+             self.grouped["pieces"] += len(group)
+             self.grouped["rows"] += rows
++            self._owe(time.perf_counter() - t)
+             if prof is not None:
+                 prof.fill(time.perf_counter() - t)
+             return [l.s for l, _ in group if l.s.done]
+@@ -927,6 +955,7 @@
+             first = self._fill(lane, stop)
+             if first is not None:
+                 lane.s.take([first], self._ends(lane))
++            self._owe(time.perf_counter() - t)
+             if prof is not None:
+                 prof.fill(time.perf_counter() - t)
+             return [lane.s] if lane.s.done else []
+@@ -936,6 +965,7 @@
+             l.paused = not self._grow(l.extent, l.st.pos + self.rows_max, protect=[l.extent])
+         active = [l for l in lanes if not l.paused]
+         if not active:
++            self.owed = 0.0
+             done = []
+             if lanes and not any(not l.decoding for l in self.lanes.values()):
+                 done = self._give_back()      # every stream waits for room: the youngest goes back to the queue
+@@ -957,8 +987,18 @@
+         if prof is not None:
+             prof.mark("message")
+         self._round(active, lone=lone)
++        if self.owed > 0:
++            self.owed = max(0.0, self.owed - (time.perf_counter() - t_begin))
+         return [l.s for l in active if l.s.done]
+ 
++    def _owe(self, seconds: float) -> None:
++        """Rank 0, after a prompt chunk that ran while others decode under TF_GLM_FILL_TIME: the rounds owed for it
++        (capped, so one huge chunk cannot hold the next prompt chunk back for long)."""
++
++        if self.fill_owes:
++            ft = self.fill_time
++            self.owed = min(self.owed + seconds * (1 - ft) / ft, 30.0)
++
+     def _home(self, lane: Lane) -> bool:
+         """Rank 0: a lone stream into the one-stream graphs' home, slot 0 at the pool's first rows (SLOT, then
+         kept prompts in the way evicted and its extent MOVEd); True once it is there."""
