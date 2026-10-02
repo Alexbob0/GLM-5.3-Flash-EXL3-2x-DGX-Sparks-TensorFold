@@ -1,0 +1,13 @@
+diff --git tensorfold/server/request_options.py tensorfold/server/request_options.py
+index ad97a21..6ec5425 100644
+--- tensorfold/server/request_options.py
++++ tensorfold/server/request_options.py
+@@ -74,6 +74,8 @@ def thinking_fields(body: dict[str, Any], levels: frozenset[str] = frozenset())
+     """A request's ``reasoning_effort`` and ``enable_thinking`` where it sets them; unset is the server's default."""
+ 
+     kwargs = body.get("chat_template_kwargs") or {}
++    if isinstance(kwargs, dict) and "thinking" in kwargs and "enable_thinking" not in kwargs:
++        kwargs = {**kwargs, "enable_thinking": bool(kwargs["thinking"])}   # the switch DeepSeek-V4 / pi clients send
+     fields: dict[str, Any] = {}
+     effort = body.get("reasoning_effort")
+     if effort is None and isinstance(kwargs, dict):
