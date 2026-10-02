@@ -1,0 +1,42 @@
+--- tensorfold/families/glm5_next/cuda/multi.py
++++ tensorfold/families/glm5_next/cuda/multi.py
+@@ -127,6 +127,24 @@
+     return share
+ 
+ 
++def cap_victim(kept: list):
++    """The kept prompt to drop past TF_GLM_CACHE_ENTRIES (``kept``: least recently used first). An extent's kept
++    prompts are prefixes of its rows, so one shorter than another in its extent is an earlier point of that
++    conversation, superseded by the longer one: those go first (the oldest that is not a shared-prefix state, then
++    the oldest of any), then the least recently used. A conversation taking many turns thus drops its own earlier
++    turns instead of the only state of a conversation that is waiting on a long reply. Deterministic in ``kept``'s
++    order and extents, so both ranks drop the same one."""
++
++    longest: dict[int, int] = {}
++    for c in kept:
++        longest[id(c.extent)] = max(longest.get(id(c.extent), 0), len(c.ids))
++    superseded = [c for c in kept if len(c.ids) < longest[id(c.extent)]]
++    for c in superseded:
++        if not getattr(c, "shared", False):
++            return c
++    return superseded[0] if superseded else kept[0]
++
++
+ def multi_code(code: list[int], dflash: bool, dflash_policy: list[int]) -> list[int]:
+     """A request's policy code under --parallel: serial stays serial; auto becomes TF_GLM_DFLASH_POLICY; an MTP
+     policy its DFlash2 twin; without a draft model, serial."""
+@@ -755,12 +773,13 @@
+         snap.kid = self.next_kid
+         self.next_kid += 1
+         snap.extent = lane.extent
++        snap.shared = n in lane.shared
+         for c in [c for c in self.kept if c.ids == snap.ids]:
+             self._drop(c)
+         lane.extent.kept.append(snap)
+         self.kept.append(snap)
+         while len(self.kept) > max(1, self.g.cache_entries):
+-            self._drop(self.kept[0])
++            self._drop(cap_victim(self.kept))
+ 
+     def _drop(self, c) -> None:
+         """Forget a kept prompt; its extent goes when nothing else holds it, else shrinks to what is kept."""
